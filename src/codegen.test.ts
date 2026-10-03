@@ -1,0 +1,137 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import ts from "typescript";
+import { actionType, renderActionTypes, writeActionTypes } from "./codegen.js";
+import { parsePolicy } from "./parse.js";
+
+const POLICY = parsePolicy(`
+allow:
+  web.search: true
+  stripe.*: true
+  stripe.refunds.create:
+    max_amount: 50
+deny:
+  github.repositories.delete: true
+  filesystem:
+    paths:
+      - ~/.ssh
+`);
+
+const tmp = mkdtempSync(join(tmpdir(), "latch-codegen-"));
+afterAll(() => rmSync(tmp, { recursive: true, force: true }));
+
+describe("actionType", () => {
+  test("literals for exact names, template literals for trailing wildcards", () => {
+    expect(actionType(POLICY)).toBe(
+      '"web.search" | (`stripe.${string}` & {}) | "stripe.refunds.create" | "github.repositories.delete"',
+    );
+  });
+
+  test("a global paths deny does not widen the names to string", () => {
+    expect(actionType(POLICY)).not.toContain("string |");
+    expect(actionType(POLICY)).not.toBe("string");
+  });
+
+  test("an allowed bare * widens to string", () => {
+    expect(actionType(parsePolicy("allow:\n  '*': true\n  web.search: true\n"))).toBe("string");
+  });
+
+  test("default: allow keeps the names for autocomplete but accepts any string", () => {
+    expect(actionType(parsePolicy("default: allow\nallow:\n  web.search: true\n"))).toBe(
+      '"web.search" | (string & {})',
+    );
+  });
+
+  test("a policy that names nothing allows nothing", () => {
+    expect(actionType(parsePolicy("allow: {}\n"))).toBe("never");
+  });
+});
+
+describe("the generated latch-env.d.ts", () => {
+  const COMPILER_OPTIONS = {
+    target: "ES2024",
+    module: "NodeNext",
+    moduleResolution: "NodeNext",
+    strict: true,
+    noEmit: true,
+    skipLibCheck: true,
+    types: ["node"],
+    typeRoots: [resolve("node_modules/@types")],
+    paths: { "@vyr-e/latch": [resolve("src/index.ts")] },
+  };
+
+  beforeAll(() => {
+    writeFileSync(join(tmp, "latch-env.d.ts"), renderActionTypes(POLICY));
+    writeFileSync(
+      join(tmp, "tsconfig.json"),
+      JSON.stringify({ compilerOptions: COMPILER_OPTIONS, include: ["*.ts"] }),
+    );
+  });
+
+  test("narrows createGate with no type argument", () => {
+    writeFileSync(
+      join(tmp, "agent.ts"),
+      `import { createGate } from "@vyr-e/latch";
+const gate = createGate({ policy: "latch.yaml" });
+gate.wrap("web.search", { execute: () => "ok" });
+gate.wrap("stripe.customers.read", { execute: () => "ok" });
+gate.check("github.repositories.delete");
+// @ts-expect-error — not named in the policy
+gate.wrap("web.serach", { execute: () => "ok" });
+// @ts-expect-error — not named in the policy
+gate.check("slack.messages.send");
+`,
+    );
+    const tsc = spawnSync(resolve("node_modules/.bin/tsc"), ["-p", tmp], { encoding: "utf8" });
+    expect(tsc.stdout + tsc.stderr).toBe("");
+    expect(tsc.status).toBe(0);
+  }, 30_000);
+
+  test("autocompletes every named action, including ones under a wildcard namespace", () => {
+    const probe = join(tmp, "probe.ts");
+    const source = `import { createGate } from "@vyr-e/latch";
+createGate({ policy: "latch.yaml" }).wrap("", { execute: () => "ok" });
+`;
+    const options = ts.convertCompilerOptionsFromJson(COMPILER_OPTIONS, tmp).options;
+    const service = ts.createLanguageService({
+      getScriptFileNames: () => [probe, join(tmp, "latch-env.d.ts")],
+      getScriptVersion: () => "1",
+      getScriptSnapshot: (file) =>
+        file === probe
+          ? ts.ScriptSnapshot.fromString(source)
+          : ts.sys.fileExists(file)
+            ? ts.ScriptSnapshot.fromString(ts.sys.readFile(file)!)
+            : undefined,
+      getCurrentDirectory: () => tmp,
+      getCompilationSettings: () => options,
+      getDefaultLibFileName: ts.getDefaultLibFilePath,
+      fileExists: (file) => file === probe || ts.sys.fileExists(file),
+      readFile: (file) => (file === probe ? source : ts.sys.readFile(file)),
+      readDirectory: ts.sys.readDirectory,
+      directoryExists: ts.sys.directoryExists,
+      getDirectories: ts.sys.getDirectories,
+    });
+    const completions = service.getCompletionsAtPosition(probe, source.indexOf('wrap("') + 6, {});
+    expect(completions?.entries.map((entry) => entry.name).sort()).toEqual([
+      "github.repositories.delete",
+      "stripe.refunds.create",
+      "web.search",
+    ]);
+  }, 30_000);
+});
+
+describe("writeActionTypes", () => {
+  test("writes beside the policy, and reports whether it was already current", () => {
+    const policyFile = join(tmp, "sync", "latch.yaml");
+    mkdirSync(dirname(policyFile));
+    const first = writeActionTypes(POLICY, policyFile);
+    expect(first).toEqual({ file: join(tmp, "sync", "latch-env.d.ts"), upToDate: false });
+    expect(readFileSync(first.file, "utf8")).toContain(
+      "// Generated by `latch types` from latch.yaml.",
+    );
+    expect(writeActionTypes(POLICY, policyFile).upToDate).toBe(true);
+  });
+});
