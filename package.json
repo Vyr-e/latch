@@ -1,0 +1,68 @@
+{
+  "name": "@vyr-e/latch",
+  "version": "0.0.1",
+  "description": "A permission system for AI agents, declared in one YAML file.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Bethel Nzekea",
+  "homepage": "https://github.com/vyr-e/latch",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vyr-e/latch.git"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "permissions",
+    "policy",
+    "yaml",
+    "approval",
+    "human-in-the-loop",
+    "tooling"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "latch": "dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && chmod +x dist/cli.js",
+    "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "lint": "oxlint src",
+    "fmt": "oxfmt src",
+    "fmt:check": "oxfmt --check src",
+    "prepublishOnly": "bun run typecheck && bun test && bun run build"
+  },
+  "dependencies": {
+    "yaml": "^2.6.0"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.4",
+    "@types/node": "^26.6.4",
+    "oxfmt": "0.66.0",
+    "oxlint": "1.81.0",
+    "typescript": "5.9.3"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
