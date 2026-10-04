@@ -1,0 +1,15 @@
+agent: support-agent
+
+allow:
+  stripe.customers.read: true
+  stripe.refunds.create:
+    max_amount: 50
+    approval: required
+  github.issues.create: true
+
+deny:
+  github.repositories.delete: true
+  filesystem:
+    paths:
+      - ~/.ssh
+      - ~/.aws
