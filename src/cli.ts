@@ -165,7 +165,12 @@ function cmdCheck(rest: string[]): number {
 function cmdList(rest: string[]): number {
   try {
     const { policy } = loadPolicy(rest.find((arg) => !arg.startsWith("-")));
-    process.stdout.write(`agent: ${policy.agent ?? "(unnamed)"}  default: ${policy.default}\n\n`);
+    process.stdout.write(`agent: ${policy.agent ?? "(unnamed)"}  default: ${policy.default}\n`);
+    const mode = policy.mode ?? (policy.classifier !== undefined ? "hybrid" : "deterministic");
+    const classifier =
+      policy.classifier !== undefined ? `, classifier: ${policy.classifier.provider}` : "";
+    const history = policy.history?.enabled ? ", history: on" : "";
+    process.stdout.write(`mode: ${mode}${classifier}${history}\n\n`);
     process.stdout.write("ALLOW\n");
     if (policy.allow.length === 0) process.stdout.write("  (nothing)\n");
     for (const rule of policy.allow) {
@@ -242,6 +247,8 @@ function describeConstraints(rule: { constraints: Constraints }): string {
   if (rule.constraints.approval !== undefined) parts.push(`approval: ${rule.constraints.approval}`);
   if (rule.constraints.paths !== undefined)
     parts.push(`paths: ${rule.constraints.paths.join(", ")}`);
+  if (rule.constraints.pathFields !== undefined)
+    parts.push(`path_fields: ${rule.constraints.pathFields.join(", ")}`);
   if (rule.constraints.description !== undefined) parts.push(rule.constraints.description);
   return parts.length > 0 ? `  (${parts.join("; ")})` : "";
 }

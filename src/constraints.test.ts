@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { homedir } from "node:os";
-import { findAmount, findAmounts, findPathValues, pathMatches } from "./constraints.js";
+import {
+  findAmount,
+  findAmounts,
+  findMalformedAmount,
+  findPathValues,
+  pathMatches,
+} from "./constraints.js";
 
 describe("pathMatches", () => {
   test("a literal pattern covers itself and everything inside it", () => {
@@ -38,13 +44,31 @@ describe("pathMatches", () => {
 });
 
 describe("findPathValues", () => {
-  test("collects path-like fields case-insensitively, three levels deep", () => {
+  test("collects path-like fields case-insensitively, at any depth", () => {
     const values = findPathValues({
       path: "/a",
       nested: { FilePath: "/b", deeper: { target: "/c" } },
       fourth: { too: { deep: { deeper: { path: "/d" } } } },
     });
-    expect(values).toEqual(["/a", "/b", "/c"]);
+    expect(values).toEqual(["/a", "/b", "/c", "/d"]);
+  });
+
+  test("terminates on cyclic input", () => {
+    const input: Record<string, unknown> = { path: "/a" };
+    input["self"] = input;
+    const list: unknown[] = ["/b"];
+    list.push(list);
+    input["paths"] = list;
+    expect(findPathValues(input)).toEqual(["/a", "/b"]);
+    expect(findAmounts(input)).toEqual([]);
+  });
+
+  test("extra fields join the built-in set, case-insensitively", () => {
+    expect(findPathValues({ output: "/a", uri: "/b" })).toEqual([]);
+    expect(findPathValues({ Output: "/a", nested: { URI: ["/b"] } }, ["output", "Uri"])).toEqual([
+      "/a",
+      "/b",
+    ]);
   });
 
   test("does not treat command strings as paths", () => {
@@ -61,6 +85,24 @@ describe("findPathValues", () => {
   test("collapses repeated slashes and a leading ./ before matching", () => {
     expect(pathMatches("/tmp", "//tmp//x///")).toBe(true);
     expect(pathMatches("src", "./src/a.ts")).toBe(true);
+  });
+});
+
+describe("pathMatches with . and ..", () => {
+  test("resolves .. before matching", () => {
+    expect(pathMatches("~/.ssh", "~/tmp/../.ssh/id_rsa")).toBe(true);
+    expect(pathMatches("/etc", "/var/../etc/hosts")).toBe(true);
+    expect(pathMatches("workspace", "workspace/../../etc/passwd")).toBe(false);
+    expect(pathMatches("/tmp/**", "/tmp/../etc/passwd")).toBe(false);
+  });
+
+  test("resolves .. against the home directory, not past the tilde", () => {
+    expect(pathMatches(`${homedir()}/..`, "~/..")).toBe(true);
+    expect(pathMatches("~", "~/../other")).toBe(false);
+  });
+
+  test("the root pattern covers every absolute path", () => {
+    expect(pathMatches("/", "/etc/hosts")).toBe(true);
   });
 });
 
@@ -87,5 +129,24 @@ describe("findAmounts", () => {
 
   test("findAmount returns only the first", () => {
     expect(findAmount({ items: [{ amount: 1 }, { amount: 9000 }] })).toBe(1);
+  });
+
+  test("finds amounts at any depth", () => {
+    expect(findAmounts({ a: { b: { c: { d: { amount: 7 } } } } })).toEqual([7]);
+  });
+});
+
+describe("findMalformedAmount", () => {
+  test("reports the first amount that is not a finite number", () => {
+    expect(findMalformedAmount({ amount: 5, items: [{ amount: "9999" }] })).toBe("9999");
+    expect(findMalformedAmount({ amount: Number.NaN })).toBeNaN();
+    expect(findMalformedAmount({ amount: true })).toBe(true);
+    expect(findMalformedAmount({ amount: { value: 10 } })).toEqual({ value: 10 });
+  });
+
+  test("treats null as absent and nested amounts as amounts", () => {
+    expect(findMalformedAmount({ amount: null })).toBeUndefined();
+    expect(findMalformedAmount({ amount: { items: [{ amount: 3 }] } })).toBeUndefined();
+    expect(findMalformedAmount({ amount: [1, 2] })).toBeUndefined();
   });
 });

@@ -66,6 +66,15 @@ Behavior inside `wrap`:
   pause-and-resume contract belongs to the runtime.
 - **allow** → `execute` runs with its original arguments.
 
+The action name is yours to choose: latch can't tell what a tool does, so a delete tool wrapped as
+`fs.read` gets `fs.read`'s rules. Name each tool by its most dangerous effect.
+
+With a classifier bound, `wrap` also gates contextually before the approval step: calls judged
+inappropriate throw `LatchSkippedError`, uncertain ones `LatchReviewRequiredError`, and the
+deterministic checks above still run first. See [docs/classifier.md](./classifier.md) for the
+full contextual layer, including `gate.evaluate` — the combined
+`{ authorization, execution, source }` evaluation.
+
 ### Typed action names
 
 `createGate` writes `latch-env.d.ts` beside `latch.yaml` and rewrites it when the policy changes.

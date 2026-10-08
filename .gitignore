@@ -3,3 +3,10 @@ dist/
 *.tsbuildinfo
 .DS_Store
 *.log
+
+# local secrets / vercel link
+.env.local
+.env*.local
+.vercel/
+.vercel
+.env*

@@ -61,6 +61,21 @@ latch gives the same policy three surfaces, so any agent — framework-wired or 
    latch types                                                   # writes latch-env.d.ts
    ```
 
+4. **A contextual layer (optional).** Rules say what an agent *may* do; an interchangeable
+   classifier judges whether an authorized call is *appropriate now* — so an agent allowed to
+   open GitHub issues doesn't open one for "good morning". Denials, constraints, and approvals
+   always win; the classifier only restricts.
+
+   ```ts
+   const gate = createGate({
+     policy: "latch.yaml",
+     classifier: createLLMJudge({ model: "typesafe-ai/jev" }),
+     situation: (input) => ({ agent, task, context }),
+   });
+   ```
+
+   See [Contextual gating](./docs/classifier.md).
+
 ## Rules that hold everywhere
 
 - **Deny beats allow.** A matching deny rule wins, even against a more specific allow.
@@ -84,6 +99,7 @@ The CLI ships with the package: `bunx @vyr-e/latch --help` (or `npx @vyr-e/latch
 - [Getting started](./docs/getting-started.md)
 - [Schema reference](./docs/schema.md)
 - [Runtime](./docs/runtime.md)
+- [Contextual gating](./docs/classifier.md)
 - [CLI](./docs/cli.md)
 - [Prompt](./docs/prompt.md)
 

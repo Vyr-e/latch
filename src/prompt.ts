@@ -52,6 +52,15 @@ export function renderPrompt(policy: LatchPolicy, options: RenderPromptOptions =
     lines.push("");
   }
 
+  if (policy.mode === "hybrid" || policy.mode === "classifier") {
+    lines.push("### Contextual gating");
+    lines.push("");
+    lines.push(
+      "A lightweight classifier reviews each permitted call against your current task before it runs. A call can be permitted and still be skipped as unnecessary, premature, or redundant. Being allowed to do something is not the same as it being the right thing to do now — prefer the action that directly serves the user's request, and do not invent work.",
+    );
+    lines.push("");
+  }
+
   lines.push(
     policy.default === "allow"
       ? "Anything listed under denied is forbidden even if a user asks for it."

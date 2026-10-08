@@ -8,6 +8,7 @@ A complete `latch.yaml`:
 agent: support-agent        # optional name, surfaced in prompts
 version: 1                  # optional; must be 1
 default: deny               # optional; "deny" (default) or "allow"
+mode: hybrid                # optional; deterministic (default) | hybrid | classifier
 
 allow:
   stripe.customers.read: true
@@ -21,9 +22,28 @@ deny:
     paths:
       - ~/.ssh
       - ~/.aws
+
+classifier:                 # optional; implies mode: hybrid — see docs/classifier.md
+  provider: judge           #   name of a runtime-registered classifier
+  thresholds: { execute: 0.85, review: 0.55 }
+  invoke: always            #   always (default) | conditional | manual
+  conditions: { on_unmatched: true, on_urgency: true }
+  fallback: skip            #   skip (default) | review | deny
+  timeout_ms: 10000
+
+history:                    # optional classification/decision history
+  enabled: true
+  max_entries: 1000
 ```
 
 Unknown root keys are errors (with a did-you-mean suggestion), so typos like `allowd:` fail loudly.
+
+## Contextual gating keys
+
+A `classifier:` block implies `mode: hybrid` when `mode` is absent. The policy only carries
+settings — the implementation is bound at runtime (`createGate({ classifiers: { judge } })`).
+`mode: classifier` requires an explicit, non-empty allow list and `default: deny`: the classifier
+decides execution within a scope, never the scope itself. Full semantics: [docs/classifier.md](./classifier.md).
 
 ## Rules
 
@@ -66,18 +86,21 @@ When several rules match an action, the **most specific** wins (exact, then long
 
 | Key | Value | Meaning |
 | --- | ----- | ------- |
-| `max_amount` | non-negative number | Every numeric `amount` field in the input must be ≤ this — a batch with one amount over the limit fails, and a missing amount is a violation. |
+| `max_amount` | non-negative number | Every numeric `amount` field in the input must be ≤ this — a batch with one amount over the limit fails, and a missing or non-numeric amount (`"80"`) is a violation. |
 | `approval` | `"required"` or `"never"` | `required` pauses for a human before each call runs. |
 | `paths` | list of strings | Restrict (allow) or target (deny) by path-like input fields. |
+| `path_fields` | list of strings | Extra input field names to treat as paths for this rule's `paths`. |
 | `description` | string | Human-readable explanation, used in prompts and deny reasons. |
 
 ### How `paths` matching works
 
 Path-like input fields — `path`, `paths`, `file`, `filepath`, `filename`, `directory`, `dir`,
-`target`, `source`, `dest`, and friends, case-insensitive, up to three levels deep — are collected
+`target`, `source`, `dest`, `cwd`, and friends, case-insensitive, at any depth — are collected
 (each field may be one string or a list of strings) and tested against the patterns:
 
 - `~` expands to the home directory, on both sides.
+- `.` and `..` resolve before matching: `~/tmp/../.ssh/id_rsa` is `~/.ssh/id_rsa`. A relative path
+  that climbs above its base (`workspace/../../etc`) is outside every allow pattern, even `**`.
 - A literal pattern matches itself **and anything inside it**: `~/.ssh` covers `~/.ssh/id_rsa`.
 - `*` matches within one segment, `**` across segments: `/tmp/**` covers everything strictly inside
   `/tmp`; `/a/**/b` also matches `/a/b`.
@@ -86,6 +109,19 @@ Matching is case-sensitive. Command strings (`{ command: "cat ~/.ssh/id_rsa" }`)
 `paths` guards structured path arguments. A deny rule with `paths` fires when any collected path
 falls under a pattern; an allow rule with `paths` passes only when every collected path is covered,
 and fails when the input has no path-like fields at all.
+
+Relative paths are matched as written; latch doesn't know the tool's working directory. A deny on
+`~/.ssh` won't catch `.ssh/id_rsa`, so have tools pass absolute paths.
+
+When a tool names its path argument something generic, list it in `path_fields` (added to the
+built-in set, not replacing it):
+
+```yaml
+allow:
+  render.export:
+    paths: [exports]
+    path_fields: [output]
+```
 
 ### The bare `filesystem.paths` entry
 

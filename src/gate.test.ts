@@ -2,7 +2,9 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LatchApprovalRequiredError, LatchDeniedError } from "./errors.js";
+import { LatchApprovalRequiredError, LatchDeniedError, LatchSkippedError } from "./errors.js";
+import { createClassifier } from "./classifier.js";
+import { createMemoryHistory } from "./history.js";
 import { toEveApprovalPolicy } from "./adapters/eve.js";
 import { createGate } from "./gate.js";
 import { parsePolicy } from "./parse.js";
@@ -152,5 +154,178 @@ describe("createGate", () => {
     writeFileSync(file, "allow:\n  web.search: true\n");
     createGate({ policy: file, types: false });
     expect(existsSync(join(dir, "latch-env.d.ts"))).toBe(false);
+  });
+});
+
+describe("createGate with a classifier", () => {
+  const HYBRID = parsePolicy(`
+allow:
+  github.issues.create: true
+  stripe.refunds.create:
+    max_amount: 50
+    approval: required
+deny:
+  github.repositories.delete: true
+classifier:
+  provider: mock
+`);
+
+  function mockClassifier(decision: "execute" | "skip" | "abstain", confidence = 0.95) {
+    return createClassifier({
+      id: "mock",
+      model: {
+        predict: () => ({
+          decision,
+          scores: { relevance: 0.95, necessity: 0.9, urgency: 0.8 },
+          confidence,
+        }),
+      },
+    });
+  }
+
+  const situation = () => ({
+    agent: { id: "support-1" },
+    task: { objective: "Investigate payment failures" },
+    context: { currentMessage: "please track the failures" },
+  });
+
+  const classificationInput = (tool: string, args: Record<string, unknown> = {}) => ({
+    ...situation(),
+    action: { tool, arguments: args },
+  });
+
+  test("gate.evaluate returns the full contextual evaluation", async () => {
+    const gate = createGate({
+      policy: HYBRID,
+      classifiers: { mock: mockClassifier("execute") },
+      types: false,
+    });
+    const evaluation = await gate.evaluate(classificationInput("github.issues.create"));
+    expect(evaluation.authorization).toBe("allow");
+    expect(evaluation.execution).toBe("execute");
+    expect(evaluation.source).toBe("hybrid");
+  });
+
+  test("a YAML-referenced provider without a registry entry fails loudly at creation", () => {
+    expect(() => createGate({ policy: HYBRID, types: false })).toThrow(
+      /references classifier "mock", but no such classifier is registered/,
+    );
+  });
+
+  test("wrap throws LatchSkippedError when the classifier judges the call unnecessary", async () => {
+    const gate = createGate({
+      policy: HYBRID,
+      classifiers: { mock: mockClassifier("skip") },
+      situation,
+      types: false,
+    });
+    const wrapped = gate.wrap("github.issues.create", { execute: (_input: unknown) => "ran" });
+    await expect(wrapped.execute({})).rejects.toThrow(LatchSkippedError);
+  });
+
+  test("wrap runs the tool when the classifier executes, and records executed history", async () => {
+    const store = createMemoryHistory();
+    const gate = createGate({
+      policy: HYBRID,
+      classifiers: { mock: mockClassifier("execute") },
+      situation,
+      history: store,
+      types: false,
+    });
+    const wrapped = gate.wrap("github.issues.create", { execute: (_input: unknown) => "ran" });
+    await expect(wrapped.execute({ title: "Payments" })).resolves.toBe("ran");
+    expect(store.list()).toHaveLength(1);
+    expect(store.list()[0]!.executed).toBe(true);
+  });
+
+  test("wrap still requires approval after a positive classification", async () => {
+    const gate = createGate({
+      policy: HYBRID,
+      classifiers: { mock: mockClassifier("execute") },
+      situation,
+      types: false,
+    });
+    const wrapped = gate.wrap("stripe.refunds.create", {
+      execute: (_input: unknown) => "refunded",
+    });
+    await expect(wrapped.execute({ amount: 10 })).rejects.toThrow(LatchApprovalRequiredError);
+  });
+
+  test("wrap with a skipped approval-gated call never bothers the human", async () => {
+    let approvals = 0;
+    const gate = createGate({
+      policy: HYBRID,
+      classifiers: { mock: mockClassifier("skip") },
+      situation,
+      onApproval: () => {
+        approvals++;
+        return true;
+      },
+      types: false,
+    });
+    const wrapped = gate.wrap("stripe.refunds.create", {
+      execute: (_input: unknown) => "refunded",
+    });
+    await expect(wrapped.execute({ amount: 10 })).rejects.toThrow(LatchSkippedError);
+    expect(approvals).toBe(0);
+  });
+
+  test("enforce: false keeps wrap deterministic while evaluate still classifies", async () => {
+    const gate = createGate({
+      policy: HYBRID,
+      classifiers: { mock: mockClassifier("skip") },
+      situation,
+      enforce: false,
+      types: false,
+    });
+    const wrapped = gate.wrap("github.issues.create", { execute: (_input: unknown) => "ran" });
+    await expect(wrapped.execute({})).resolves.toBe("ran");
+    const evaluation = await gate.evaluate(classificationInput("github.issues.create"));
+    expect(evaluation.execution).toBe("skip");
+  });
+
+  test("mode: deterministic with a bound classifier is a configuration error", () => {
+    const strict = parsePolicy("mode: deterministic\nallow:\n  a.b: true\n");
+    expect(() =>
+      createGate({ policy: strict, classifier: mockClassifier("execute"), types: false }),
+    ).toThrow(/mode: deterministic, but a classifier is bound/);
+  });
+
+  test("enforcing wrap without a situation provider is a configuration error", () => {
+    const gate = createGate({
+      policy: HYBRID,
+      classifiers: { mock: mockClassifier("execute") },
+      types: false,
+    });
+    expect(() => gate.wrap("github.issues.create", { execute: () => "ran" })).toThrow(
+      /needs a situation for the classifier/,
+    );
+  });
+
+  test("policy history: enabled gives the gate a default in-memory store", () => {
+    const recording = parsePolicy(`
+allow:
+  github.issues.create: true
+classifier:
+  provider: mock
+history:
+  enabled: true
+  max_entries: 10
+`);
+    const gate = createGate({
+      policy: recording,
+      classifiers: { mock: mockClassifier("execute") },
+      situation,
+      types: false,
+    });
+    expect(gate.history).toBeDefined();
+  });
+
+  test("a gate without a classifier behaves exactly as before", async () => {
+    const gate = createGate({ policy: POLICY, types: false });
+    expect(gate.history).toBeUndefined();
+    const evaluation = await gate.evaluate(classificationInput("web.search"));
+    expect(evaluation.source).toBe("deterministic");
+    expect(evaluation.execution).toBe("execute");
   });
 });

@@ -1,4 +1,10 @@
-import { checkConstraints, denyPathsFire, findAmounts } from "./constraints.js";
+import {
+  checkConstraints,
+  denyPathsFire,
+  describeValue,
+  findAmounts,
+  findMalformedAmount,
+} from "./constraints.js";
 import { bySpecificity, patternMatches } from "./match.js";
 import type { LatchDecision, LatchPolicy, MatchedRule, Rule } from "./types.js";
 
@@ -78,6 +84,9 @@ function findFiringDeny(policy: LatchPolicy, action: string, input: unknown): Ru
     if (unconditional) return rule;
     if (rule.constraints.paths !== undefined && denyPathsFire(rule.constraints, input)) return rule;
     if (rule.constraints.maxAmount !== undefined) {
+      // An amount that is present but not a number can't be shown to be under
+      // the threshold, so the deny fires (fail closed). An absent amount doesn't.
+      if (findMalformedAmount(input) !== undefined) return rule;
       const amounts = findAmounts(input);
       if (amounts.some((amount) => amount > rule.constraints.maxAmount!)) return rule;
     }
@@ -95,6 +104,10 @@ function denyReason(rule: Rule, action: string, input: unknown): string {
     return `the input touches a denied path (${constraints.paths.join(", ")})`;
   }
   if (constraints.maxAmount !== undefined) {
+    const malformed = findMalformedAmount(input);
+    if (malformed !== undefined) {
+      return `amount ${describeValue(malformed)} is not a number, so the deny threshold of ${constraints.maxAmount} applies`;
+    }
     const over = findAmounts(input).find((amount) => amount > constraints.maxAmount!);
     if (over !== undefined) {
       return `amount ${over} exceeds the deny threshold of ${constraints.maxAmount}`;

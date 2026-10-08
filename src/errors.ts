@@ -52,6 +52,34 @@ export class LatchApprovalRequiredError extends LatchError {
   }
 }
 
+export class LatchSkippedError extends LatchError {
+  override name = "LatchSkippedError";
+  readonly action: string;
+  readonly reason?: string;
+
+  constructor(action: string, reason?: string) {
+    super(
+      `Skipped: ${action}${reason ? ` — ${reason}` : ""}. The call is permitted, but the classifier judged it inappropriate in the current context.`,
+    );
+    this.action = action;
+    this.reason = reason;
+  }
+}
+
+export class LatchReviewRequiredError extends LatchError {
+  override name = "LatchReviewRequiredError";
+  readonly action: string;
+  readonly reason?: string;
+
+  constructor(action: string, reason?: string) {
+    super(
+      `Review required: ${action}${reason ? ` — ${reason}` : ""}. The classification was too uncertain to execute automatically.`,
+    );
+    this.action = action;
+    this.reason = reason;
+  }
+}
+
 export function formatIssues(issues: LatchIssue[]): string {
   return issues
     .map((issue) => {

@@ -25,16 +25,20 @@ Run a single file: `bun test src/evaluate.test.ts`.
 
 ## Layout
 
-- `src/types.ts` — the normalized policy and decision types
+- `src/types.ts` — the normalized policy and decision types (including classifier/mode/history settings)
 - `src/parse.ts` — YAML → normalized policy; collects every issue with line info
 - `src/match.ts` — action pattern matching and specificity
 - `src/constraints.ts` — max_amount, path matching, input field discovery
-- `src/evaluate.ts` — `check()`, the decision function every other surface calls
-- `src/gate.ts` — `createGate()` / `wrap()`, the tool-enforcement surface
+- `src/evaluate.ts` — `check()`, the deterministic decision function every other surface calls
+- `src/classifier.ts` — the classifier contract: `createClassifier` (model + schema + decide), validation, thresholds, fallbacks
+- `src/engine.ts` — `evaluate()`: deterministic authorization + contextual classification (`LatchEvaluation`)
+- `src/history.ts` — classification-history store interface and the bounded in-memory adapter
+- `src/gate.ts` — `createGate()` / `wrap()`, the tool-enforcement surface; binds classifiers and history
 - `src/prompt.ts` — policy → markdown for system prompts
 - `src/codegen.ts` — policy → `latch-env.d.ts`, so `createGate` type-checks action names
 - `src/load.ts` — file discovery (walks up for latch.yaml)
 - `src/adapters/eve.ts` — mapping to eve's approval-status union
+- `src/adapters/llm-judge.ts` — `createLLMJudge`: any OpenAI-compatible endpoint as a classifier (fetch only)
 - `src/cli.ts` — the `latch` CLI (init, validate, check, list, prompt, types)
 - `docs/` — published docs, shipped in the npm package
 
@@ -43,8 +47,9 @@ Run a single file: `bun test src/evaluate.test.ts`.
 1. **Deny wins over allow**, always, even when the allow is more specific.
 2. **Default deny** when nothing matches. `default: allow` loosens only the fallback.
 3. **Constraints fail closed**: missing amount/path values are violations, not passes, and every
-   amount in a batch is checked (not just the first found). Path-like fields are collected whether
-   they hold one string or a list of strings.
+   amount in a batch is checked (not just the first found). A non-numeric `amount` fails an allow
+   `max_amount` and fires a deny one. Inputs are searched at any depth, and paths resolve `..` before
+   matching. Path-like fields are collected whether they hold one string or a list of strings.
 4. **A bare `filesystem.paths` entry is global** — it applies to every action's path-like fields,
    because the intent is protecting paths, not a namespace. `filesystem.*` scopes it to filesystem
    tools.
@@ -52,6 +57,15 @@ Run a single file: `bun test src/evaluate.test.ts`.
    (path, file, target, …). This is a documented limitation, not a bug to "fix" silently.
 6. **`*` in action patterns is trailing-only** (`stripe.*`, or bare `*`). Mid-pattern wildcards are a
    parse error. More specific matches win; ties keep authoring order.
+7. **The classifier layer only restricts.** Authorization is always `check()` first (denials never
+   reach a model — lazy inference); the classifier affects `execution`, never upgrades
+   `authorization`; approvals survive high-confidence recommendations; and failures, timeouts,
+   invalid output, and low confidence resolve through the fallback, never an execution. Custom
+   schemas and decide mappers feed that same pipeline: whatever they produce is validated against
+   the canonical `ClassificationResult` before the engine sees it.
+8. **Policies are pure data.** `LatchPolicy` never holds model instances or stores — classifiers,
+   registries, and history bind at `createGate`, which keeps YAML and TypeScript policies deciding
+   identically.
 
 ## Conventions
 

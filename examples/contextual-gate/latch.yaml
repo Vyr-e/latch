@@ -1,0 +1,54 @@
+# Contextual gating: rules authorize, a classifier judges whether to act now.
+# Docs: https://github.com/vyr-e/latch/blob/main/docs/classifier.md
+#
+# This file declares the settings; the model binds at runtime:
+#
+#   import { createGate, createLLMJudge } from "@vyr-e/latch";
+#
+#   const gate = createGate({
+#     policy: "examples/contextual-gate/latch.yaml",
+#     classifiers: { judge: createLLMJudge({ model: "typesafe-ai/jev" }) },
+#     situation: (input) => ({
+#       agent: { id: "support-agent" },
+#       task: { objective: currentTaskObjective() },
+#       context: { currentMessage: lastUserMessage() },
+#     }),
+#   });
+#
+#   await gate.evaluate({ …full ClassificationInput… });   // inspect-only
+#   gate.wrap("github.issues.create", tool);               // enforces skip/review too
+
+agent: support-agent
+
+mode: hybrid
+
+allow:
+  stripe.customers.read: true
+  github.issues.create: true
+  stripe.refunds.create:
+    max_amount: 50
+    approval: required
+
+deny:
+  github.repositories.delete: true
+  filesystem:
+    paths:
+      - ~/.ssh
+      - ~/.aws
+
+classifier:
+  provider: judge
+  thresholds:
+    execute: 0.85
+    review: 0.55
+    necessity: 0.6
+  invoke: conditional
+  conditions:
+    on_unmatched: true    # wildcard/default-authorized calls get judged
+    on_urgency: true      # …and so do urgency-tagged tasks (the tag is a claim, not a fact)
+  fallback: skip
+  timeout_ms: 5000
+
+history:
+  enabled: true
+  max_entries: 1000

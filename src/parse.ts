@@ -1,10 +1,38 @@
 import { LineCounter, parseDocument } from "yaml";
-import type { Constraints, LatchPolicy, Rule } from "./types.js";
+import type {
+  ClassifierSettings,
+  ClassifierThresholds,
+  Constraints,
+  HistorySettings,
+  InvocationConditions,
+  LatchPolicy,
+  Rule,
+} from "./types.js";
 import { LatchParseError } from "./errors.js";
 import type { LatchIssue } from "./errors.js";
 
-const CONSTRAINT_KEYS = ["max_amount", "approval", "paths", "description"] as const;
-const ROOT_KEYS = ["agent", "version", "default", "allow", "deny"] as const;
+const CONSTRAINT_KEYS = ["max_amount", "approval", "paths", "path_fields", "description"] as const;
+const ROOT_KEYS = [
+  "agent",
+  "version",
+  "default",
+  "allow",
+  "deny",
+  "mode",
+  "classifier",
+  "history",
+] as const;
+const CLASSIFIER_KEYS = [
+  "enabled",
+  "provider",
+  "thresholds",
+  "invoke",
+  "conditions",
+  "fallback",
+  "timeout_ms",
+] as const;
+const CONDITION_KEYS = ["on_unmatched", "on_urgency"] as const;
+const THRESHOLD_KEYS = ["execute", "review", "relevance", "necessity", "urgency"] as const;
 
 type Section = "allow" | "deny";
 
@@ -161,7 +189,368 @@ function validateRoot(
   const allow = validateSection(root["allow"], "allow", issues, posByPath, file);
   const deny = validateSection(root["deny"], "deny", issues, posByPath, file);
 
-  return { agent, version: 1, default: def, allow, deny };
+  const mode = validateMode(root["mode"], issues, posByPath, file);
+  const classifier = validateClassifierBlock(root["classifier"], issues, posByPath, file);
+  const history = validateHistoryBlock(root["history"], issues, posByPath, file);
+
+  // Cross-checks: the contextual layer must not contradict itself or loosen scope.
+  if (mode === "deterministic" && classifier !== undefined) {
+    pushIssue(
+      issues,
+      posByPath,
+      "classifier",
+      file,
+      "the policy sets mode: deterministic but configures a classifier — set mode: hybrid (or classifier), or remove the classifier block",
+    );
+  }
+  if (mode === "classifier" && (allow.length === 0 || def === "allow")) {
+    pushIssue(
+      issues,
+      posByPath,
+      "mode",
+      file,
+      "mode: classifier requires an explicit, bounded capability scope — list the permitted actions under allow and keep default: deny (a classifier decides execution, never capability)",
+    );
+  }
+
+  const policy: LatchPolicy = { agent, version: 1, default: def, allow, deny };
+  // A classifier block without an explicit mode means hybrid; everything else
+  // stays absent so policies without the contextual layer keep their exact shape.
+  const effectiveMode = mode ?? (classifier !== undefined ? "hybrid" : undefined);
+  if (effectiveMode !== undefined) policy.mode = effectiveMode;
+  if (classifier !== undefined) policy.classifier = classifier;
+  if (history !== undefined) policy.history = history;
+  return policy;
+}
+
+function validateMode(
+  value: unknown,
+  issues: LatchIssue[],
+  posByPath: Map<string, Pos>,
+  file: string,
+): LatchPolicy["mode"] {
+  if (value === undefined) return undefined;
+  if (value === "deterministic" || value === "hybrid" || value === "classifier") return value;
+  pushIssue(
+    issues,
+    posByPath,
+    "mode",
+    file,
+    `"mode" must be "deterministic", "hybrid", or "classifier" (got ${formatValue(value)})`,
+  );
+  return undefined;
+}
+
+function validateClassifierBlock(
+  value: unknown,
+  issues: LatchIssue[],
+  posByPath: Map<string, Pos>,
+  file: string,
+): ClassifierSettings | undefined {
+  if (value === undefined) return undefined;
+  if (!isPlainObject(value)) {
+    pushIssue(
+      issues,
+      posByPath,
+      "classifier",
+      file,
+      `"classifier" must be a mapping of settings (got ${formatValue(value)})`,
+    );
+    return undefined;
+  }
+  if (value["enabled"] === false) return undefined;
+  if (value["enabled"] !== undefined && typeof value["enabled"] !== "boolean") {
+    pushIssue(
+      issues,
+      posByPath,
+      "classifier.enabled",
+      file,
+      `"classifier.enabled" must be true or false (got ${formatValue(value["enabled"])})`,
+    );
+  }
+
+  for (const key of Object.keys(value)) {
+    if (!(CLASSIFIER_KEYS as readonly string[]).includes(key)) {
+      const hint = suggest(key, CLASSIFIER_KEYS);
+      pushIssue(
+        issues,
+        posByPath,
+        `classifier.${key}`,
+        file,
+        `"${key}" is not a classifier setting (settings are: ${CLASSIFIER_KEYS.join(", ")})${hint ? ` — did you mean "${hint}"?` : ""}`,
+      );
+    }
+  }
+
+  let provider: string | undefined;
+  if (typeof value["provider"] === "string" && value["provider"].trim() !== "") {
+    provider = value["provider"];
+  } else {
+    pushIssue(
+      issues,
+      posByPath,
+      "classifier.provider",
+      file,
+      `"classifier.provider" must be a non-empty string naming a classifier registered at runtime, e.g. provider: judge`,
+    );
+  }
+
+  const thresholds = validateThresholds(value["thresholds"], issues, posByPath, file);
+
+  let invoke: ClassifierSettings["invoke"];
+  if (value["invoke"] !== undefined) {
+    if (
+      value["invoke"] === "always" ||
+      value["invoke"] === "conditional" ||
+      value["invoke"] === "manual"
+    ) {
+      invoke = value["invoke"];
+    } else {
+      pushIssue(
+        issues,
+        posByPath,
+        "classifier.invoke",
+        file,
+        `"classifier.invoke" must be "always", "conditional", or "manual" (got ${formatValue(value["invoke"])})`,
+      );
+    }
+  }
+
+  const conditions = validateConditions(value["conditions"], issues, posByPath, file);
+  if (conditions !== undefined && invoke !== undefined && invoke !== "conditional") {
+    pushIssue(
+      issues,
+      posByPath,
+      "classifier.conditions",
+      file,
+      `"classifier.conditions" only applies when invoke: conditional — set invoke: conditional, or remove conditions (got invoke: ${invoke})`,
+    );
+  }
+
+  let fallback: ClassifierSettings["fallback"];
+  if (value["fallback"] !== undefined) {
+    if (
+      value["fallback"] === "skip" ||
+      value["fallback"] === "review" ||
+      value["fallback"] === "deny"
+    ) {
+      fallback = value["fallback"];
+    } else {
+      pushIssue(
+        issues,
+        posByPath,
+        "classifier.fallback",
+        file,
+        `"classifier.fallback" must be "skip", "review", or "deny" (got ${formatValue(value["fallback"])})`,
+      );
+    }
+  }
+
+  let timeoutMs: number | undefined;
+  if (value["timeout_ms"] !== undefined) {
+    if (
+      typeof value["timeout_ms"] === "number" &&
+      Number.isFinite(value["timeout_ms"]) &&
+      value["timeout_ms"] > 0
+    ) {
+      timeoutMs = value["timeout_ms"];
+    } else {
+      pushIssue(
+        issues,
+        posByPath,
+        "classifier.timeout_ms",
+        file,
+        `"classifier.timeout_ms" must be a positive number of milliseconds (got ${formatValue(value["timeout_ms"])})`,
+      );
+    }
+  }
+
+  if (provider === undefined) return undefined;
+  const settings: ClassifierSettings = { provider };
+  if (thresholds !== undefined) settings.thresholds = thresholds;
+  if (invoke !== undefined) settings.invoke = invoke;
+  if (conditions !== undefined) settings.conditions = conditions;
+  if (fallback !== undefined) settings.fallback = fallback;
+  if (timeoutMs !== undefined) settings.timeoutMs = timeoutMs;
+  return settings;
+}
+
+function validateThresholds(
+  value: unknown,
+  issues: LatchIssue[],
+  posByPath: Map<string, Pos>,
+  file: string,
+): ClassifierThresholds | undefined {
+  if (value === undefined) return undefined;
+  if (!isPlainObject(value)) {
+    pushIssue(
+      issues,
+      posByPath,
+      "classifier.thresholds",
+      file,
+      `"classifier.thresholds" must be a mapping (got ${formatValue(value)})`,
+    );
+    return undefined;
+  }
+  for (const key of Object.keys(value)) {
+    if (!(THRESHOLD_KEYS as readonly string[]).includes(key)) {
+      const hint = suggest(key, THRESHOLD_KEYS);
+      pushIssue(
+        issues,
+        posByPath,
+        `classifier.thresholds.${key}`,
+        file,
+        `"${key}" is not a threshold (thresholds are: ${THRESHOLD_KEYS.join(", ")})${hint ? ` — did you mean "${hint}"?` : ""}`,
+      );
+    }
+  }
+
+  const thresholds: ClassifierThresholds = {};
+  for (const key of THRESHOLD_KEYS) {
+    const threshold = value[key];
+    if (threshold === undefined) continue;
+    if (
+      typeof threshold !== "number" ||
+      !Number.isFinite(threshold) ||
+      threshold < 0 ||
+      threshold > 1
+    ) {
+      pushIssue(
+        issues,
+        posByPath,
+        `classifier.thresholds.${key}`,
+        file,
+        `threshold "${key}" must be a number between 0 and 1 (got ${formatValue(threshold)})`,
+      );
+    } else {
+      thresholds[key] = threshold;
+    }
+  }
+  if (
+    thresholds.execute !== undefined &&
+    thresholds.review !== undefined &&
+    thresholds.review > thresholds.execute
+  ) {
+    pushIssue(
+      issues,
+      posByPath,
+      "classifier.thresholds.review",
+      file,
+      `the review threshold (${thresholds.review}) must not exceed the execute threshold (${thresholds.execute}) — confidence between them routes to review`,
+    );
+  }
+  return Object.keys(thresholds).length > 0 ? thresholds : undefined;
+}
+
+function validateConditions(
+  value: unknown,
+  issues: LatchIssue[],
+  posByPath: Map<string, Pos>,
+  file: string,
+): InvocationConditions | undefined {
+  if (value === undefined) return undefined;
+  if (!isPlainObject(value)) {
+    pushIssue(
+      issues,
+      posByPath,
+      "classifier.conditions",
+      file,
+      `"classifier.conditions" must be a mapping (got ${formatValue(value)})`,
+    );
+    return undefined;
+  }
+  for (const key of Object.keys(value)) {
+    if (!(CONDITION_KEYS as readonly string[]).includes(key)) {
+      const hint = suggest(key, CONDITION_KEYS);
+      pushIssue(
+        issues,
+        posByPath,
+        `classifier.conditions.${key}`,
+        file,
+        `"${key}" is not an invocation condition (conditions are: ${CONDITION_KEYS.join(", ")})${hint ? ` — did you mean "${hint}"?` : ""}`,
+      );
+    }
+  }
+
+  const conditions: InvocationConditions = {};
+  for (const key of CONDITION_KEYS) {
+    const flag = value[key];
+    if (flag === undefined) continue;
+    if (typeof flag !== "boolean") {
+      pushIssue(
+        issues,
+        posByPath,
+        `classifier.conditions.${key}`,
+        file,
+        `condition "${key}" must be true or false (got ${formatValue(flag)})`,
+      );
+    } else if (flag) {
+      // YAML spells conditions in snake_case; the normalized policy is camelCase.
+      conditions[key === "on_unmatched" ? "onUnmatched" : "onUrgency"] = true;
+    }
+  }
+  return Object.keys(conditions).length > 0 ? conditions : undefined;
+}
+
+function validateHistoryBlock(
+  value: unknown,
+  issues: LatchIssue[],
+  posByPath: Map<string, Pos>,
+  file: string,
+): HistorySettings | undefined {
+  if (value === undefined) return undefined;
+  if (!isPlainObject(value)) {
+    pushIssue(
+      issues,
+      posByPath,
+      "history",
+      file,
+      `"history" must be a mapping (got ${formatValue(value)})`,
+    );
+    return undefined;
+  }
+  for (const key of Object.keys(value)) {
+    if (key !== "enabled" && key !== "max_entries") {
+      const hint = suggest(key, ["enabled", "max_entries"]);
+      pushIssue(
+        issues,
+        posByPath,
+        `history.${key}`,
+        file,
+        `"${key}" is not a history setting (settings are: enabled, max_entries)${hint ? ` — did you mean "${hint}"?` : ""}`,
+      );
+    }
+  }
+
+  const enabled = value["enabled"];
+  if (typeof enabled !== "boolean") {
+    pushIssue(
+      issues,
+      posByPath,
+      "history.enabled",
+      file,
+      `"history.enabled" must be true or false (got ${formatValue(enabled)}) — write history: { enabled: true } to record classification decisions`,
+    );
+    return undefined;
+  }
+  if (!enabled) return undefined;
+
+  const settings: HistorySettings = { enabled: true };
+  const maxEntries = value["max_entries"];
+  if (maxEntries !== undefined) {
+    if (typeof maxEntries === "number" && Number.isInteger(maxEntries) && maxEntries > 0) {
+      settings.maxEntries = maxEntries;
+    } else {
+      pushIssue(
+        issues,
+        posByPath,
+        "history.max_entries",
+        file,
+        `"history.max_entries" must be a positive integer (got ${formatValue(maxEntries)})`,
+      );
+    }
+  }
+  return settings;
 }
 
 function validateSection(
@@ -427,6 +816,33 @@ function validateConstraints(
       );
     } else {
       constraints.paths = paths;
+    }
+  }
+
+  const pathFields = value["path_fields"];
+  if (pathFields !== undefined) {
+    if (
+      !Array.isArray(pathFields) ||
+      pathFields.length === 0 ||
+      !pathFields.every((f) => typeof f === "string" && f.trim() !== "")
+    ) {
+      pushIssue(
+        issues,
+        posByPath,
+        `${path}.path_fields`,
+        file,
+        '"path_fields" must be a non-empty list of input field names (e.g. [output, uri])',
+      );
+    } else if (paths === undefined) {
+      pushIssue(
+        issues,
+        posByPath,
+        `${path}.path_fields`,
+        file,
+        '"path_fields" only applies alongside "paths" — add the paths these fields are checked against, or remove it',
+      );
+    } else {
+      constraints.pathFields = pathFields;
     }
   }
 

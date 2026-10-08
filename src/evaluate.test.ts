@@ -140,6 +140,102 @@ deny:
     ).toBe("allow");
   });
 
+  test("max_amount sees amounts at any depth and fails closed on non-numeric ones", () => {
+    const policy = parsePolicy(`
+allow:
+  pay.send:
+    max_amount: 50
+`);
+    const deep = { amount: 10, a: { b: { c: { d: { amount: 9999 } } } } };
+    expect(check(policy, "pay.send", deep).effect).toBe("deny");
+
+    const stringAmount = check(policy, "pay.send", { amount: 10, items: [{ amount: "9999" }] });
+    expect(stringAmount.effect).toBe("deny");
+    if (stringAmount.effect === "deny") expect(stringAmount.reason).toContain('"9999"');
+
+    expect(check(policy, "pay.send", { amount: { value: 10 } }).effect).toBe("deny");
+    expect(check(policy, "pay.send", { amount: 10, refund: { amount: null } }).effect).toBe(
+      "allow",
+    );
+
+    const denyPolicy = parsePolicy(`
+default: allow
+deny:
+  pay.send:
+    max_amount: 100
+`);
+    const denied = check(denyPolicy, "pay.send", { amount: "5000" });
+    expect(denied.effect).toBe("deny");
+    if (denied.effect === "deny") expect(denied.reason).toContain("not a number");
+    expect(check(denyPolicy, "pay.send", { note: "no amount" }).effect).toBe("allow");
+  });
+
+  test("paths resolve .. before matching, for allow and deny rules", () => {
+    const policy = parsePolicy(`
+allow:
+  fs.write:
+    paths:
+      - workspace
+  fs.read:
+    paths:
+      - "**"
+deny:
+  filesystem:
+    paths:
+      - ~/.ssh
+`);
+    expect(check(policy, "fs.write", { path: "workspace/a/../b.txt" }).effect).toBe("allow");
+    expect(check(policy, "fs.write", { path: "workspace/../../etc/passwd" }).effect).toBe("deny");
+    expect(check(policy, "fs.read", { path: "../../etc/passwd" }).effect).toBe("deny");
+
+    const traversal = check(policy, "fs.write", { path: "~/tmp/../.ssh/id_rsa" });
+    expect(traversal.effect).toBe("deny");
+    if (traversal.effect === "deny") expect(traversal.matched?.section).toBe("deny");
+  });
+
+  test("a path deny fires on deeply nested and working-directory fields", () => {
+    const policy = parsePolicy(`
+allow:
+  fs.*: true
+deny:
+  filesystem:
+    paths:
+      - ~/.ssh
+`);
+    const nested = { job: { steps: [{ run: { with: { file: "~/.ssh/id_rsa" } } }] } };
+    expect(check(policy, "fs.copy", nested).effect).toBe("deny");
+    expect(check(policy, "fs.exec", { cwd: "~/.ssh" }).effect).toBe("deny");
+  });
+
+  test("path_fields extends which input fields a rule's paths check", () => {
+    const policy = parsePolicy(`
+allow:
+  render.export:
+    paths: [exports]
+    path_fields: [Output]
+  render.preview: true
+deny:
+  filesystem:
+    paths: [~/.ssh]
+    path_fields: [output]
+`);
+    expect(check(policy, "render.export", { output: "exports/a.png" }).effect).toBe("allow");
+    expect(check(policy, "render.export", { output: "/tmp/a.png" }).effect).toBe("deny");
+    const keys = check(policy, "render.preview", { output: "~/.ssh/authorized_keys" });
+    expect(keys.effect).toBe("deny");
+    if (keys.effect === "deny") expect(keys.matched?.section).toBe("deny");
+
+    // Without path_fields, a generic field stays opaque: `output: "json"` is not a path.
+    const plain = parsePolicy(`
+allow:
+  render.export:
+    paths: [exports]
+`);
+    expect(check(plain, "render.export", { path: "exports/a.png", output: "json" }).effect).toBe(
+      "allow",
+    );
+  });
+
   test("an allow rule with paths restricts the action to those paths", () => {
     const policy = parsePolicy(`
 allow:
