@@ -1,6 +1,6 @@
 {
   "name": "@vyr-e/latch",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "A permission system for AI agents, declared in one YAML file.",
   "type": "module",
   "license": "MIT",
