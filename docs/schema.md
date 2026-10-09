@@ -26,8 +26,8 @@ deny:
 classifier:                 # optional; implies mode: hybrid — see docs/classifier.md
   provider: judge           #   name of a runtime-registered classifier
   thresholds: { execute: 0.85, review: 0.55 }
-  invoke: always            #   always (default) | conditional | manual
-  conditions: { on_unmatched: true, on_urgency: true }
+  invoke: conditional       #   always (default) | conditional | manual
+  conditions: { on_unmatched: true, on_urgency: true }   # only with invoke: conditional
   fallback: skip            #   skip (default) | review | deny
   timeout_ms: 10000
 

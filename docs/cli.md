@@ -3,7 +3,8 @@ title: CLI
 ---
 
 The CLI is non-interactive by design — every command takes explicit arguments, and exit codes are
-part of the contract, so agents and CI can script it. Run it with `bunx latch` or `npx latch`.
+part of the contract, so agents and CI can script it. Run it with `bunx @vyr-e/latch` or `npx @vyr-e/latch`; a bare `bunx latch` fetches an unrelated package
+unless latch is installed in the project.
 
 ```
 latch init [file]              Scaffold a starter policy (default: ./latch.yaml)
@@ -24,7 +25,7 @@ latch types [file]             Generate action-name types for createGate
 
 ```sh
 $ latch validate
-latch.yaml is valid — 3 allow rule(s), 1 deny rule(s), default: deny
+latch.yaml is valid — 3 allow rule(s), 2 deny rule(s), default: deny
 ```
 
 Invalid files print every issue with its position and exit `1`:
@@ -65,6 +66,7 @@ loosens a policy by surprise.
 ```sh
 $ latch list
 agent: support-agent  default: deny
+mode: deterministic
 
 ALLOW
   stripe.customers.read

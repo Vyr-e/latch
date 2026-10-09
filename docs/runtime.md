@@ -123,5 +123,15 @@ export default defineTool({
 });
 ```
 
+The adapter checks eve's tool name, which eve derives from the file path (`tools/refund.ts` →
+`refund`), so the policy names eve tools directly:
+
+```yaml
+allow:
+  refund:
+    max_amount: 50
+    approval: required
+```
+
 With this, the YAML file is the approval policy for any number of eve tools — in code, nothing
 dupes.

@@ -8,7 +8,7 @@ same rules.
 ## 1. Declare a policy
 
 ```sh
-bunx latch init
+bunx @vyr-e/latch init
 ```
 
 creates a starter `latch.yaml`:
@@ -40,7 +40,7 @@ maps — `stripe: { customers: { read: true } }` means the same thing as the fla
 ## 2. Validate
 
 ```sh
-bunx latch validate
+bunx @vyr-e/latch validate
 ```
 
 Every problem is reported with its line and column, all at once, so a file can be fixed in one pass:
@@ -82,7 +82,7 @@ approval requirements, denied paths, and the rule that denials are not to be wor
 ## 5. Check calls in CI
 
 ```sh
-bunx latch check stripe.refunds.create --input '{"amount": 80}'
+bunx @vyr-e/latch check stripe.refunds.create --input '{"amount": 80}'
 # DENIED  stripe.refunds.create — amount 80 exceeds max_amount 50   (exit 1)
 ```
 
