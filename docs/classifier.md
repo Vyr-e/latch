@@ -161,6 +161,9 @@ Set `mode` in the policy (a `classifier:` block implies `hybrid`):
   execution within it. The parser rejects this mode without an explicit, non-empty allow list and
   `default: deny`: a classifier decides execution, never capability.
 
+`hybrid` and `classifier` need a classifier bound at runtime. `createGate` throws without one, and
+`evaluate()` resolves authorized calls to `skip` rather than running them unjudged.
+
 ## Thresholds and fallbacks
 
 ```yaml

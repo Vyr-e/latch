@@ -150,6 +150,12 @@ export function createGate<Action extends string = RegisteredAction>(
       "latch: the policy sets mode: deterministic, but a classifier is bound — set mode: hybrid in the policy, or remove the classifier binding",
     );
   }
+  if (mode !== "deterministic" && classifier === undefined) {
+    // Wrapped tools would otherwise run every authorized call unjudged.
+    throw new Error(
+      `latch: the policy sets mode: ${mode}, but no classifier is bound — pass classifier: <LatchClassifier> (or classifiers: { name: … } with a classifier block) to createGate, or set mode: deterministic`,
+    );
+  }
   const enforce = options.enforce ?? true;
   const enforceClassifier = classifier !== undefined && mode !== "deterministic" && enforce;
   const situation = options.situation;

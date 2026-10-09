@@ -48,8 +48,10 @@ Run a single file: `bun test src/evaluate.test.ts`.
 2. **Default deny** when nothing matches. `default: allow` loosens only the fallback.
 3. **Constraints fail closed**: missing amount/path values are violations, not passes, and every
    amount in a batch is checked (not just the first found). A non-numeric `amount` fails an allow
-   `max_amount` and fires a deny one. Inputs are searched at any depth, and paths resolve `..` before
-   matching. Path-like fields are collected whether they hold one string or a list of strings.
+   `max_amount` and fires a deny one. Inputs are searched at any depth. Path-like fields are
+   collected whether they hold one string or a list of strings. Path deny fires on any reading
+   (raw or `..`-resolved, any case, `file://`, backslashes); path allow requires every reading to be
+   covered case-sensitively and never covers a `..` segment the pattern lacks.
 4. **A bare `filesystem.paths` entry is global** — it applies to every action's path-like fields,
    because the intent is protecting paths, not a namespace. `filesystem.*` scopes it to filesystem
    tools.
@@ -60,7 +62,8 @@ Run a single file: `bun test src/evaluate.test.ts`.
 7. **The classifier layer only restricts.** Authorization is always `check()` first (denials never
    reach a model — lazy inference); the classifier affects `execution`, never upgrades
    `authorization`; approvals survive high-confidence recommendations; and failures, timeouts,
-   invalid output, and low confidence resolve through the fallback, never an execution. Custom
+   invalid output, and low confidence resolve through the fallback, never an execution. A
+   `hybrid`/`classifier` mode with no classifier bound fails closed (gate throws, evaluate skips). Custom
    schemas and decide mappers feed that same pipeline: whatever they produce is validated against
    the canonical `ClassificationResult` before the engine sees it.
 8. **Policies are pure data.** `LatchPolicy` never holds model instances or stores — classifiers,

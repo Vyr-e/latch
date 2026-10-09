@@ -291,6 +291,17 @@ classifier:
     ).toThrow(/mode: deterministic, but a classifier is bound/);
   });
 
+  test("mode: hybrid or classifier with no classifier bound is a configuration error", () => {
+    const hybrid = parsePolicy("mode: hybrid\nallow:\n  a.b: true\n");
+    expect(() => createGate({ policy: hybrid, types: false })).toThrow(
+      /mode: hybrid, but no classifier is bound/,
+    );
+    const scoped = parsePolicy("mode: classifier\nallow:\n  a.b: true\n");
+    expect(() => createGate({ policy: scoped, types: false })).toThrow(
+      /mode: classifier, but no classifier is bound/,
+    );
+  });
+
   test("enforcing wrap without a situation provider is a configuration error", () => {
     const gate = createGate({
       policy: HYBRID,

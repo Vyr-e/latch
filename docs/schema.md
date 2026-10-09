@@ -99,16 +99,21 @@ Path-like input fields — `path`, `paths`, `file`, `filepath`, `filename`, `dir
 (each field may be one string or a list of strings) and tested against the patterns:
 
 - `~` expands to the home directory, on both sides.
-- `.` and `..` resolve before matching: `~/tmp/../.ssh/id_rsa` is `~/.ssh/id_rsa`. A relative path
-  that climbs above its base (`workspace/../../etc`) is outside every allow pattern, even `**`.
+- `.` and `..` resolve before matching: `~/tmp/../.ssh/id_rsa` is `~/.ssh/id_rsa`.
 - A literal pattern matches itself **and anything inside it**: `~/.ssh` covers `~/.ssh/id_rsa`.
 - `*` matches within one segment, `**` across segments: `/tmp/**` covers everything strictly inside
   `/tmp`; `/a/**/b` also matches `/a/b`.
 
-Matching is case-sensitive. Command strings (`{ command: "cat ~/.ssh/id_rsa" }`) are **not** parsed —
-`paths` guards structured path arguments. A deny rule with `paths` fires when any collected path
-falls under a pattern; an allow rule with `paths` passes only when every collected path is covered,
-and fails when the input has no path-like fields at all.
+Command strings (`{ command: "cat ~/.ssh/id_rsa" }`) are **not** parsed — `paths` guards structured
+path arguments. latch never touches the filesystem, so it can't follow symlinks; it matches in the
+safe direction instead:
+
+- **Deny is loose.** It fires if any reading of a path matches: as written or with `..` resolved,
+  ignoring case, as a `file://` URL, or with `\` as a separator.
+- **Allow is strict.** Every collected path must be covered, case-sensitively, in every reading. A
+  path with a `..` segment is covered only by a pattern that has one too, so `workspace/**` never
+  covers `workspace/link/../secret`. An allow rule with `paths` also fails when the input has no
+  path-like fields at all.
 
 Relative paths are matched as written; latch doesn't know the tool's working directory. A deny on
 `~/.ssh` won't catch `.ssh/id_rsa`, so have tools pass absolute paths.

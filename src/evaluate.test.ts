@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { homedir } from "node:os";
 import { parsePolicy } from "./parse.js";
 import { check } from "./evaluate.js";
 
@@ -170,7 +171,7 @@ deny:
     expect(check(denyPolicy, "pay.send", { note: "no amount" }).effect).toBe("allow");
   });
 
-  test("paths resolve .. before matching, for allow and deny rules", () => {
+  test("allow paths never cover a .. segment, since a symlink can redirect it", () => {
     const policy = parsePolicy(`
 allow:
   fs.write:
@@ -179,18 +180,53 @@ allow:
   fs.read:
     paths:
       - "**"
+  fs.sync:
+    paths:
+      - ../shared
+`);
+    expect(check(policy, "fs.write", { path: "workspace/b.txt" }).effect).toBe("allow");
+    expect(check(policy, "fs.write", { path: "workspace/link/../secret" }).effect).toBe("deny");
+    expect(check(policy, "fs.write", { path: "workspace/../../etc/passwd" }).effect).toBe("deny");
+    expect(check(policy, "fs.read", { path: "../../etc/passwd" }).effect).toBe("deny");
+    // A pattern that names a .. path itself can cover one.
+    expect(check(policy, "fs.sync", { path: "../shared/x" }).effect).toBe("allow");
+  });
+
+  test("allow paths are case-sensitive and reject URL and backslash spellings", () => {
+    const policy = parsePolicy(`
+allow:
+  fs.write:
+    paths:
+      - /srv/app
+`);
+    expect(check(policy, "fs.write", { path: "/srv/app/a" }).effect).toBe("allow");
+    expect(check(policy, "fs.write", { path: "/SRV/app/a" }).effect).toBe("deny");
+    expect(check(policy, "fs.write", { path: "file:///srv/app/a" }).effect).toBe("deny");
+    expect(check(policy, "fs.write", { path: "/srv/app\\..\\..\\etc" }).effect).toBe("deny");
+  });
+
+  test("deny paths fire on any reading of the path", () => {
+    const policy = parsePolicy(`
+default: allow
 deny:
   filesystem:
     paths:
       - ~/.ssh
 `);
-    expect(check(policy, "fs.write", { path: "workspace/a/../b.txt" }).effect).toBe("allow");
-    expect(check(policy, "fs.write", { path: "workspace/../../etc/passwd" }).effect).toBe("deny");
-    expect(check(policy, "fs.read", { path: "../../etc/passwd" }).effect).toBe("deny");
-
-    const traversal = check(policy, "fs.write", { path: "~/tmp/../.ssh/id_rsa" });
-    expect(traversal.effect).toBe("deny");
-    if (traversal.effect === "deny") expect(traversal.matched?.section).toBe("deny");
+    const home = homedir();
+    const denied = [
+      "~/tmp/../.ssh/id_rsa", // .. resolved
+      "~/.ssh/../x", // as written, in case ~/.ssh is a symlink
+      `${home}/.SSH/id_rsa`, // case-insensitive filesystems
+      `file://${home}/.ssh/id_rsa`, // file URL
+      `file://${home}/%2Essh/id_rsa`, // percent-encoded file URL
+      "~\\.ssh\\id_rsa", // backslash separators
+    ];
+    for (const path of denied) {
+      const decision = check(policy, "fs.read", { path });
+      expect([path, decision.effect]).toEqual([path, "deny"]);
+    }
+    expect(check(policy, "fs.read", { path: "~/projects/notes.md" }).effect).toBe("allow");
   });
 
   test("a path deny fires on deeply nested and working-directory fields", () => {

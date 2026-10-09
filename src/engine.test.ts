@@ -202,12 +202,27 @@ describe("evaluate: hybrid execution decisions", () => {
     expect(evaluation.execution).toBe("review");
   });
 
-  test("no classifier bound preserves today's deterministic behavior exactly", async () => {
-    const evaluation = await evaluate(policy, {}, input());
+  test("a policy without mode and no classifier keeps deterministic behavior exactly", async () => {
+    const plain = parsePolicy("allow:\n  github.issues.create: true\n");
+    const evaluation = await evaluate(plain, {}, input());
     expect(evaluation.authorization).toBe("allow");
     expect(evaluation.execution).toBe("execute");
     expect(evaluation.source).toBe("deterministic");
     expect(evaluation.classification).toBeUndefined();
+  });
+
+  test("mode: hybrid with no classifier bound skips instead of executing unjudged", async () => {
+    const evaluation = await evaluate(policy, {}, input());
+    expect(evaluation.authorization).toBe("allow");
+    expect(evaluation.execution).toBe("skip");
+    expect(evaluation.reason).toContain("no classifier is bound");
+
+    const denied = await evaluate(
+      policy,
+      {},
+      input({ action: { tool: "github.repositories.delete", arguments: {} } }),
+    );
+    expect(denied.authorization).toBe("deny");
   });
 
   test("mode: deterministic with a bound classifier never invokes it", async () => {

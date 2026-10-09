@@ -91,9 +91,8 @@ export async function evaluate(
   const classifier = runtime.classifier;
   const mode: PolicyMode = policy.mode ?? (classifier !== undefined ? "hybrid" : "deterministic");
 
-  if (decision.effect === "deny" || mode === "deterministic" || classifier === undefined) {
-    // Lazy inference: a denied call never reaches the model, and a runtime
-    // with no classifier has nothing contextual to add.
+  if (decision.effect === "deny" || mode === "deterministic") {
+    // Lazy inference: a denied call never reaches the model.
     return {
       action,
       authorization: toAuthorization(decision.effect),
@@ -101,6 +100,19 @@ export async function evaluate(
       source: "deterministic",
       decision,
       reason: decision.effect === "deny" ? decision.reason : undefined,
+    };
+  }
+
+  if (classifier === undefined) {
+    // The policy asked for contextual judgment and nothing can give it.
+    // Running every authorized call instead would fail open.
+    return {
+      action,
+      authorization: toAuthorization(decision.effect),
+      execution: "skip",
+      source: "deterministic",
+      decision,
+      reason: `the policy sets mode: ${mode}, but no classifier is bound — bind one at runtime, or set mode: deterministic`,
     };
   }
 

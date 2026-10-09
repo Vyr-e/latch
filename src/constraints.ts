@@ -213,14 +213,7 @@ export function checkConstraints(constraints: Constraints, input: unknown): Cons
         reason: `the rule restricts the action to paths (${constraints.paths.join(", ")}), but the input has no path-like fields`,
       };
     }
-    // A relative path that climbs out of its base (`workspace/../../etc`) is
-    // covered only by a pattern that climbs out too — never by `**` or `*`.
-    const outside = values.filter(
-      (value) =>
-        !constraints.paths!.some(
-          (pattern) => pathMatches(pattern, value) && (!escapesBase(value) || escapesBase(pattern)),
-        ),
-    );
+    const outside = values.filter((value) => !allowCovers(constraints.paths!, value));
     if (outside.length > 0) {
       return {
         ok: false,
@@ -235,11 +228,72 @@ export function checkConstraints(constraints: Constraints, input: unknown): Cons
 /**
  * Whether a deny rule's paths constraint fires for the input: any path-like
  * value falling under a listed pattern triggers the deny.
+ *
+ * latch never touches the filesystem, so it can't know how a tool will read a
+ * path. Deny matching is deliberately loose: it fires if *any* plausible
+ * reading matches — as written or with `..` resolved (the two differ when a
+ * segment is a symlink), ignoring case (macOS and Windows defaults), as a
+ * `file://` URL, or with backslashes as separators.
  */
 export function denyPathsFire(constraints: Constraints, input: unknown): boolean {
   if (constraints.paths === undefined || constraints.paths.length === 0) return false;
   const values = findPathValues(input, constraints.pathFields);
-  return values.some((value) => constraints.paths!.some((pattern) => pathMatches(pattern, value)));
+  return values.some((value) =>
+    spellings(value).some((spelling) =>
+      constraints.paths!.some((pattern) =>
+        READINGS.some((reading) => matches(pattern, spelling, reading)),
+      ),
+    ),
+  );
+}
+
+/**
+ * Allow matching is the strict mirror: every reading of the value must be
+ * covered, case-sensitively, and a path with a `..` segment is covered only by
+ * a pattern that has one too — `workspace/link/../secret` may leave
+ * `workspace` if `link` is a symlink, so `workspace/**` never covers it.
+ */
+function allowCovers(patterns: readonly string[], value: string): boolean {
+  return spellings(value).every((spelling) =>
+    patterns.some(
+      (pattern) =>
+        matches(pattern, spelling, RESOLVED) && (!hasDotDot(spelling) || hasDotDot(pattern)),
+    ),
+  );
+}
+
+interface Reading {
+  resolveDots: boolean;
+  ignoreCase: boolean;
+}
+
+const RESOLVED: Reading = { resolveDots: true, ignoreCase: false };
+const READINGS: Reading[] = [
+  RESOLVED,
+  { resolveDots: false, ignoreCase: false },
+  { resolveDots: true, ignoreCase: true },
+  { resolveDots: false, ignoreCase: true },
+];
+
+/** The value as written, plus the path a `file://` URL names and a `/`-separated form. */
+function spellings(value: string): string[] {
+  const out = new Set([value]);
+  if (/^file:/i.test(value)) {
+    try {
+      out.add(decodeURIComponent(new URL(value).pathname));
+    } catch {
+      // not a parseable URL; the raw spelling still gets checked
+    }
+  }
+  // Entries added here have no backslashes, so iterating the live set ends.
+  for (const spelling of out) {
+    if (spelling.includes("\\")) out.add(spelling.replaceAll("\\", "/"));
+  }
+  return [...out];
+}
+
+function hasDotDot(path: string): boolean {
+  return /(?:^|[/\\])\.\.(?:[/\\]|$)/.test(path);
 }
 
 /**
@@ -252,8 +306,16 @@ export function denyPathsFire(constraints: Constraints, input: unknown): boolean
  *   matched as `~/.ssh/id_rsa`
  */
 export function pathMatches(pattern: string, path: string): boolean {
-  const expandedPattern = normalizePath(pattern);
-  const expandedPath = normalizePath(path);
+  return matches(pattern, path, RESOLVED);
+}
+
+function matches(pattern: string, path: string, reading: Reading): boolean {
+  let expandedPattern = normalizePath(pattern, reading.resolveDots);
+  let expandedPath = normalizePath(path, reading.resolveDots);
+  if (reading.ignoreCase) {
+    expandedPattern = expandedPattern.toLowerCase();
+    expandedPath = expandedPath.toLowerCase();
+  }
   if (expandedPattern === expandedPath) return true;
 
   if (!expandedPattern.includes("*")) {
@@ -264,18 +326,19 @@ export function pathMatches(pattern: string, path: string): boolean {
 }
 
 /**
- * Expand `~`, then resolve `.`/`..` and repeated slashes. Tilde goes first so
- * `~/../x` resolves against the home directory instead of dropping the `~`.
+ * Expand `~`, then collapse repeated slashes and `.` segments, and — when
+ * `resolveDots` — `..` segments too. Tilde goes first so `~/../x` resolves
+ * against the home directory instead of dropping the `~`.
  */
-function normalizePath(path: string): string {
-  const normalized = posix.normalize(expandTilde(path));
+function normalizePath(path: string, resolveDots: boolean): string {
+  const expanded = expandTilde(path);
+  const normalized = resolveDots
+    ? posix.normalize(expanded)
+    : expanded
+        .replace(/\/{2,}/g, "/")
+        .replace(/\/\.(?=\/|$)/g, "")
+        .replace(/^(?:\.\/)+/, "");
   return normalized.length > 1 ? normalized.replace(/\/+$/, "") : normalized;
-}
-
-/** Whether a relative path climbs above its base once normalized (`a/../../b`). */
-function escapesBase(path: string): boolean {
-  const normalized = normalizePath(path);
-  return normalized === ".." || normalized.startsWith("../");
 }
 
 /** A value as it should appear in a reason string. */
