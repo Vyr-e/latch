@@ -109,7 +109,7 @@ path arguments. latch never touches the filesystem, so it can't follow symlinks;
 safe direction instead:
 
 - **Deny is loose.** It fires if any reading of a path matches: as written or with `..` resolved,
-  ignoring case, as a `file://` URL, or with `\` as a separator.
+  ignoring case, as a `file://` URL, percent-decoded, or with `\` as a separator.
 - **Allow is strict.** Every collected path must be covered, case-sensitively, in every reading. A
   path with a `..` segment is covered only by a pattern that has one too, so `workspace/**` never
   covers `workspace/link/../secret`. An allow rule with `paths` also fails when the input has no

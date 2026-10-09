@@ -275,7 +275,11 @@ const READINGS: Reading[] = [
   { resolveDots: false, ignoreCase: true },
 ];
 
-/** The value as written, plus the path a `file://` URL names and a `/`-separated form. */
+/**
+ * The value as written, plus the path a `file://` URL names, the
+ * percent-decoded form (a tool that decodes `%2e%2e` reads `..`), and a
+ * `/`-separated form.
+ */
 function spellings(value: string): string[] {
   const out = new Set([value]);
   if (/^file:/i.test(value)) {
@@ -283,6 +287,13 @@ function spellings(value: string): string[] {
       out.add(decodeURIComponent(new URL(value).pathname));
     } catch {
       // not a parseable URL; the raw spelling still gets checked
+    }
+  }
+  if (value.includes("%")) {
+    try {
+      out.add(decodeURIComponent(value));
+    } catch {
+      // malformed escapes can't decode to anything a tool would read either
     }
   }
   // Entries added here have no backslashes, so iterating the live set ends.

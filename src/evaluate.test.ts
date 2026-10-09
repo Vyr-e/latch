@@ -203,6 +203,11 @@ allow:
     expect(check(policy, "fs.write", { path: "/SRV/app/a" }).effect).toBe("deny");
     expect(check(policy, "fs.write", { path: "file:///srv/app/a" }).effect).toBe("deny");
     expect(check(policy, "fs.write", { path: "/srv/app\\..\\..\\etc" }).effect).toBe("deny");
+    // A tool that percent-decodes reads `..` here.
+    expect(check(policy, "fs.write", { path: "/srv/app/%2e%2e/%2e%2e/etc/passwd" }).effect).toBe(
+      "deny",
+    );
+    expect(check(policy, "fs.write", { path: "/srv/app/report%20final.md" }).effect).toBe("allow");
   });
 
   test("deny paths fire on any reading of the path", () => {
@@ -220,6 +225,7 @@ deny:
       `${home}/.SSH/id_rsa`, // case-insensitive filesystems
       `file://${home}/.ssh/id_rsa`, // file URL
       `file://${home}/%2Essh/id_rsa`, // percent-encoded file URL
+      "~/%2Essh/id_rsa", // percent-encoded plain path
       "~\\.ssh\\id_rsa", // backslash separators
     ];
     for (const path of denied) {
